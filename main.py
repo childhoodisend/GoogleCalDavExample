@@ -1,90 +1,73 @@
-import os
-from datetime import datetime, timezone, timedelta
+import json
+from datetime import datetime, timedelta
 
-from google.auth.transport.requests import Request
-from google.oauth2.credentials import Credentials
+import requests
 from google_auth_oauthlib.flow import InstalledAppFlow
-from googleapiclient.discovery import build
+from icalendar import Calendar
+from lxml import etree
 
-# OAuth Settings
-SCOPES = ['https://www.googleapis.com/auth/calendar.readonly']
-TOKEN_FILE = 'token.json'
-CREDENTIALS_FILE = 'credentials_example.json'
+SCOPES = ['https://www.googleapis.com/auth/calendar']
 
+flow = InstalledAppFlow.from_client_secrets_file(
+    'credentials.json', SCOPES)
+creds = flow.run_local_server()
 
-def get_authenticated_service():
-    """Authenticate with Google Calendar API"""
-    creds = None
+with open('token.json', 'w') as token:
+    token.write(creds.to_json())
 
-    # Load existing credentials if available
-    if os.path.exists(TOKEN_FILE):
-        try:
-            creds = Credentials.from_authorized_user_file(TOKEN_FILE, SCOPES)
-        except ValueError as e:
-            print(f"Error loading credentials: {e}")
-            os.remove(TOKEN_FILE)
+ACCESS_TOKEN = json.loads(creds.to_json()).get('token')
+USER_EMAIL = 'morozvktv@gmail.com'
+CALDAV_URL = f'https://apidata.googleusercontent.com/caldav/v2/{USER_EMAIL}/events'
 
-    # If no valid credentials, authenticate
-    if not creds or not creds.valid:
-        if creds and creds.expired and creds.refresh_token:
-            creds.refresh(Request())
-        else:
-            if not os.path.exists(CREDENTIALS_FILE):
-                raise FileNotFoundError(
-                    f"Missing {CREDENTIALS_FILE}. Get it from Google Cloud Console: "
-                    "https://console.cloud.google.com/apis/credentials"
-                )
+# Date range - last 7 days
+now = datetime.utcnow()
+seven_days_ago = now - timedelta(days=7)
 
-            flow = InstalledAppFlow.from_client_secrets_file(
-                CREDENTIALS_FILE,
-                SCOPES
-            )
-            creds = flow.run_local_server()
+start_str = seven_days_ago.strftime('%Y%m%dT%H%M%SZ')
+end_str = now.strftime('%Y%m%dT%H%M%SZ')
 
-        with open(TOKEN_FILE, 'w') as token:
-            token.write(creds.to_json())
+# CalDAV XML REPORT body
+xml_body = f'''<?xml version="1.0" encoding="UTF-8"?>
+<c:calendar-query xmlns:d="DAV:" xmlns:c="urn:ietf:params:xml:ns:caldav">
+  <d:prop>
+    <d:getetag/>
+    <c:calendar-data/>
+  </d:prop>
+  <c:filter>
+    <c:comp-filter name="VCALENDAR">
+      <c:comp-filter name="VEVENT">
+        <c:time-range start="{start_str}" end="{end_str}"/>
+      </c:comp-filter>
+    </c:comp-filter>
+  </c:filter>
+</c:calendar-query>'''
 
-    return build('calendar', 'v3', credentials=creds)
+headers = {
+    'Authorization': f'Bearer {ACCESS_TOKEN}',
+    'Content-Type': 'application/xml',
+    'Depth': '1',
+}
 
+response = requests.request('REPORT', CALDAV_URL, headers=headers, data=xml_body)
 
-def main():
-    print("Google Calendar - Last Week's Events")
-    print("=" * 50)
+if response.status_code != 207:
+    print("Failed to fetch events")
+    print(response.status_code, response.text)
+    exit()
 
+# Parse XML multistatus response
+tree = etree.fromstring(response.content)
+namespaces = {'d': 'DAV:', 'c': 'urn:ietf:params:xml:ns:caldav'}
+
+calendar_data_elements = tree.xpath('//c:calendar-data', namespaces=namespaces)
+
+for element in calendar_data_elements:
     try:
-        service = get_authenticated_service()
-
-        now = datetime.now(timezone.utc)
-        week_ago = now - timedelta(days=7)
-
-        # (RFC3339 format)
-        now_iso = now.isoformat()
-        week_ago_iso = week_ago.isoformat()
-
-        events_result = service.events().list(
-            calendarId='primary',
-            timeMin=week_ago_iso,
-            timeMax=now_iso,
-            singleEvents=True,
-            orderBy='startTime'
-        ).execute()
-
-        events = events_result.get('items', [])
-
-        if not events:
-            print("No events found in the last week.")
-            return
-
-        for event in events:
-            start = event['start'].get('dateTime', event['start'].get('date'))
-            end = event['end'].get('dateTime', event['end'].get('date'))
-            summary = event.get('summary', 'No title')
-
-            print(f"{start} to {end}: {summary}")
-
+        cal = Calendar.from_ical(element.text)
+        for component in cal.walk():
+            if component.name == "VEVENT":
+                summary = component.get('SUMMARY')
+                start = component.get('DTSTART').dt
+                print(f"Event: {summary}, Start: {start}")
     except Exception as e:
-        print(f"Error {e}, see README.md")
-
-
-if __name__ == '__main__':
-    main()
+        print("Failed to parse calendar data:", e)
