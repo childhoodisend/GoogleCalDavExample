@@ -1,9 +1,9 @@
 [project]
-name = "pythonproject3"
+name = "GoogleCalDavExample"
 version = "0.1.0"
 description = ""
 authors = [
-    {name = "Artem Satanovskii",email = "asatanovskii@rubackup.ru"}
+    {name = "Artem Satanovskii",email = "morozvktv@gmail.com"}
 ]
 readme = "README.md"
 requires-python = ">=3.13"
